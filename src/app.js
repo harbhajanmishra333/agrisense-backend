@@ -12,6 +12,8 @@ import irrigationRoutes from "./routes/irrigationRoutes.js";
 
 
 
+
+
 import soilRoutes from "./routes/soilRoutes.js";
 
 const app = express();
@@ -34,6 +36,9 @@ app.use("/api/soil-irrigation", soilRoutes);
 app.use("/api", soilRoutes);
 
 app.use("/api/irrigation", irrigationRoutes);
+
+
+
 
 // Default root
 app.get("/", (req, res) => {
