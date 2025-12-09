@@ -10,6 +10,7 @@ import cropRoutes from "./routes/cropRoutes.js";
 import irrigationRoutes from "./routes/irrigationRoutes.js";
 import soilRoutes from "./routes/soilRoutes.js";
 import marketRoutes from "./routes/marketRoutes.js";
+import marketDemandRoutes from "./routes/marketDemandRoutes.js";
 
 const app = express();
 
@@ -30,6 +31,9 @@ app.use("/api/crop", cropRoutes);
 app.use("/api/irrigation", irrigationRoutes);
 app.use("/api/soil", soilRoutes);          // ✔ Clean & correct
 app.use("/api/market", marketRoutes);      // ✔ Market AI routes
+
+
+app.use("/api/market/demand", marketDemandRoutes);
 
 // ROOT
 app.get("/", (req, res) => {

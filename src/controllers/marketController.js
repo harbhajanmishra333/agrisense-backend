@@ -119,9 +119,12 @@ export const marketIntelligence = async (req, res) => {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        }
+  Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+  "Content-Type": "application/json",
+  "HTTP-Referer": "http://localhost",   // Required during local testing
+  "X-Title": "AgriSense Market Intelligence"
+}
+
       }
     );
 
