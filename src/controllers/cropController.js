@@ -155,13 +155,13 @@ export const predictCrop = async (req, res) => {
       "https://openrouter.ai/api/v1/chat/completions",
       apiReq,
       {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://agrisense-backend.onrender.com",
-            "X-Title": "AgriSense Crop Prediction"
-          },
-
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "http://localhost"
+,
+          "X-Title": "AgriSense Crop Prediction"
+        },
         timeout: 60000
       }
     );
