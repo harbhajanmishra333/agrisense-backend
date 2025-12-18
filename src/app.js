@@ -34,6 +34,9 @@ app.use("/api/market", marketRoutes);      // ✔ Market AI routes
 
 
 app.use("/api/market/demand", marketDemandRoutes);
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", time: new Date() });
+});
 
 // ROOT
 app.get("/", (req, res) => {

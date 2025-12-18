@@ -9,7 +9,12 @@ Return ONLY VALID JSON. No explanations. No text outside JSON.
 Input:
 ${JSON.stringify(input, null, 2)}
 
-Return EXACTLY the following JSON structure:
+Your duty:
+- Use real-world style reasoning about demand, supply, prices, season, festivals, weather, government policies, and logistics.
+- For each crop, write a CLEAR, PRACTICAL analysis a farmer can understand.
+- Especially in "future_forecast", explain WHAT is likely to happen, HOW it may unfold, and WHY (drivers, risks, seasonality).
+
+Return EXACTLY the following JSON structure (same keys, no extra keys):
 
 {
   "top_crops": [
@@ -24,9 +29,9 @@ Return EXACTLY the following JSON structure:
         "reason": "<short summary>"
       },
       "future_forecast": {
-        "1_month": "<prediction>",
-        "3_month": "<prediction>",
-        "6_month": "<prediction>"
+        "1_month": "<3-4 sentences: what demand and prices are likely in 1 month, and why (festivals, current stocks, trader behaviour, policies, weather, etc.)>",
+        "3_month": "<3-4 sentences: how demand and prices may evolve over the next 3 months, and why (procurement, planting/harvest cycle, export signals, input costs, logistics, etc.)>",
+        "6_month": "<3-4 sentences: longer-term scenario over 6 months, including possible risks, new harvest impact, climate uncertainty, and how farmers might be affected.>"
       },
       "best_season_to_grow": "<Kharif|Rabi|Zaid>",
       "recommended": true
@@ -34,10 +39,11 @@ Return EXACTLY the following JSON structure:
   ],
   "best_crop_choice": {
     "crop": "<crop name>",
-    "reason": "<why this is the best>"
+    "reason": "<why this is the best, in 2-3 sentences using demand, risk, and profitability logic>"
   }
 }
 `;
+
 
 export const marketDemand = async (req, res) => {
   try {

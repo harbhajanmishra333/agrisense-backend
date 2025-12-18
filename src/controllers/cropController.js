@@ -1,214 +1,294 @@
-// controllers/cropController.js
 import axios from "axios";
+import { CROPS, BASE_YIELD } from "../data/crop.js";
 
-/**
- * Helper: small numeric normalizer
- */
-const toNumberOrNull = (v) => {
-  if (v === null || v === undefined || v === "") return null;
+/* ===================== UTILS ===================== */
+const num = (v) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 };
 
-/**
- * Basic yield estimate model (fallback, simple heuristic)
- * - baselineYield: typical tons/ha by crop (you can tune)
- * - modifiers: apply from NPK, moisture and temperature closeness to optimum
- */
-const baselineYields = {
-  Maize: 6.0,    // t/ha baseline
-  Cotton: 2.0,
-  Sorghum: 3.0,
-  Wheat: 4.0,
-  Paddy: 5.5,
-  // add more if you want
+const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
+
+/* ===================== OPTIMUM SCORING ===================== */
+const scoreByOptimum = (value, { min, opt, max }) => {
+  if (value == null) return 0;
+  if (value < min || value > max) return -5;
+
+  const halfRange = (max - min) / 2 || 1;
+  const dist = Math.abs(value - opt);
+  return +clamp(5 * (1 - dist / halfRange), 0, 5).toFixed(2);
 };
 
-function estimateYield(cropName, inputs) {
-  const baseline = baselineYields[cropName] ?? 2.0;
-  // simple scoring from 0..1 for each factor
-  const N = (toNumberOrNull(inputs.nitrogen) ?? 0) / 100; // assume 0-100 scale
-  const P = (toNumberOrNull(inputs.phosphorus) ?? 0) / 100;
-  const K = (toNumberOrNull(inputs.potassium) ?? 0) / 100;
-  const moisture = (toNumberOrNull(inputs.moisture) ?? 50) / 100; // 0-100 -> 0-1
-  const temp = toNumberOrNull(inputs.temperature);
-  // ideal temp effect: gaussian around 25C (very rough)
-  const tempEffect = temp == null ? 1 : Math.exp(-Math.pow((temp - 25) / 10, 2));
-  // aggregate nutrient score (cap between 0.4 and 1.6)
-  const nutrientScore = Math.min(1.6, Math.max(0.4, 0.6 + 0.8 * ((N + P + K) / 3)));
-  const moistureScore = Math.min(1.4, Math.max(0.6, 0.6 + 0.8 * moisture));
-  const est = baseline * nutrientScore * moistureScore * tempEffect;
-  // round to 2 decimals
-  return Math.round(est * 100) / 100;
-}
+/* ===================== YIELD MODEL ===================== */
+const estimateYield = (cropName, i) => {
+  const base = BASE_YIELD[cropName] ?? 2;
 
-/**
- * Strict JSON schema instruction inserted into prompt to force structured output
- */
-const buildPrompt = (input) => {
-  const maxTokens = 1400;
-  return `
-You are an agriculture expert. Produce ONLY valid JSON and NOTHING else.
+  const npkAvg =
+    ["nitrogen", "phosphorus", "potassium"]
+      .map((k) => (num(i[k]) ?? 40) / 100)
+      .reduce((a, b) => a + b, 0) / 3;
 
-Input parameters:
-${JSON.stringify(input, null, 2)}
+  const npkFactor = clamp(npkAvg, 0.6, 1.6);
+  const moisture = clamp((num(i.moisture) ?? 50) / 100, 0.4, 1);
 
-Return a JSON array with exactly three objects (top 3 crops). Each object MUST follow this exact schema:
+  const t = num(i.temperature);
+  const tempFactor = t ? Math.exp(-Math.pow((t - 25) / 10, 2)) : 1;
 
-{
-  "name": "<Crop name>",
-  "reason": "<one-sentence primary reason>",
-  "pros": "<2-3 pros separated by '; '>",
-  "cons": "<2-3 cons separated by '; '>",
-  "Growth": {
-    "soil_requirements": {
-      "pH_range": "<e.g. 6.0-7.5>",
-      "texture": "<loam/sandy/clay>",
-      "organic_matter": "<% or 'moderate'>",
-      "CEC": "<meq/100g or 'unknown'>"
+  return +(base * npkFactor * moisture * tempFactor).toFixed(2);
+};
+
+/* ===================== DECISION ENGINE ===================== */
+const SEASONS = new Set(["Kharif", "Rabi", "Summer", "Annual", "Perennial"]);
+
+const scoreCrop = (crop, i) => {
+  let score = 0;
+
+  score += crop.seasons.includes(i.season) ? 10 : -10;
+  score += scoreByOptimum(i.ph, crop.ph);
+  score += scoreByOptimum(i.rainfall, crop.rainfall);
+  score += scoreByOptimum(i.moisture, crop.moisture);
+  score += scoreByOptimum(i.temperature, crop.temperature);
+  score += scoreByOptimum(i.nitrogen, crop.nutrients.N);
+  score += scoreByOptimum(i.phosphorus, crop.nutrients.P);
+  score += scoreByOptimum(i.potassium, crop.nutrients.K);
+
+  score += crop.priority ?? 0;
+  score += (BASE_YIELD[crop.name] ?? 2) * 0.3;
+
+  return score;
+};
+
+const shortlistCrops = (input, limit = 7) =>
+  CROPS.map((c) => ({
+    name: c.name,
+    score: +scoreCrop(c, input).toFixed(2),
+    seasons: c.seasons,
+  }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+/* ===================== CROP THRESHOLD LOOKUP ===================== */
+const getCropThresholds = (cropName) => {
+  const crop = CROPS.find((c) => c.name === cropName);
+  if (!crop) return null;
+
+  return {
+    temperature: {
+      min: crop.temperature.min,
+      max: crop.temperature.max,
     },
-    "water": {
-      "rainfall_mm": "<range or number>",
-      "irrigation": "<drip/flood/sprinkler>",
-      "soil_moisture_percent_optimum": "<value or range>"
+    ph: {
+      min: crop.ph.min,
+      max: crop.ph.max,
     },
-    "temperature": {
-      "optimum_range": "<e.g. 20-30°C>",
-      "germination_min_max": "<e.g. 10-35°C>"
+    moisture: {
+      min: crop.moisture.min,
+      max: crop.moisture.max,
     },
-    "nutrient_recommendation": {
-      "N_kg_per_ha_total": "<number>",
-      "P2O5_kg_per_ha_total": "<number>",
-      "K2O_kg_per_ha_total": "<number>",
-      "split_schedule": [
-        {"stage":"<stage name>", "N": "<kg/ha>", "P2O5":"<kg/ha>", "K2O":"<kg/ha>", "timing":"<days after sowing or stage>"}
-      ]
-    },
-    "growth_cycle_days": {
-      "sowing_to_germination": "<days>",
-      "vegetative": "<days>",
-      "flowering": "<days>",
-      "grain_fill_or_boll": "<days>",
-      "harvest": "<days total>"
-    },
-    "fertilizer_tips": ["<short tip sentences>"],
-    "pest_diseases": ["<top 3 pests/diseases>"]
+  };
+};
+
+/* ===================== PROMPT BUILDER ===================== */
+const buildPrompt = (input, scoredList) => `
+You are an Indian agriculture expert.
+
+Select EXACTLY 3 crops from the candidate list.
+Do NOT invent crops.
+Do NOT use generic ranges.
+
+IMPORTANT:
+- Thresholds MUST be realistic and crop-specific
+- Use agronomic standards (ICAR-like values)
+
+Return ONLY valid JSON.
+
+Schema:
+[
+ {
+  "name": "string",
+  "reason": "string",
+  "pros": "string",
+  "cons": "string",
+  "growth": {
+    "summary": "string",
+    "thresholds": {
+      "temperature": { "min": number, "max": number },
+      "ph": { "min": number, "max": number },
+      "moisture": { "min": number, "max": number }
+    }
   },
-  "fertilizer_schedule": [
-    {"stage":"<stage>", "description":"<what to apply>", "product_examples":"<urea, DAP, MOP etc>", "kg_per_ha":"<approx kg/ha>"}
-  ],
-  "monitoring": [
-    {"item":"<soil test frequency>", "detail":"<how to monitor>"},
-    {"item":"<pest scouting>", "detail":"<triggers/actions>"}
-  ],
-  "yield_estimate_t_per_ha": "<numeric estimate in t/ha or 'unknown'>",
-  "confidence": "<low|medium|high> (based on input completeness)"
-}
+  "rank": number,
+  "algorithm_score": number,
+  "is_algorithm_top_choice": boolean,
+  "confidence": "low|medium|high"
+ }
+]
 
-Return ONLY that JSON array and nothing else. Be concise and avoid extra commentary. Maximum output tokens: ${maxTokens}.
+INPUT:
+${JSON.stringify(input)}
+
+CANDIDATES:
+${JSON.stringify(scoredList)}
 `;
+
+/* ===================== SAFE PARSER ===================== */
+const safeParseArray = (text) => {
+  if (!text || typeof text !== "string") return null;
+
+  try {
+    // Remove common wrappers / tokens
+    const cleaned = text
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .replace(/<s>/g, "")
+      .replace(/\[\/INST\]/g, "")
+      .replace(/\u0000/g, "")
+      .trim();
+
+    // 🔥 REGEX: extract first JSON array (most important fix)
+    const match = cleaned.match(/\[[\s\S]*\]/);
+
+    if (!match) return null;
+
+    return JSON.parse(match[0]);
+  } catch (err) {
+    console.error("safeParseArray failed:", err.message);
+    return null;
+  }
 };
 
+/* ===================== CONTROLLER ===================== */
 export const predictCrop = async (req, res) => {
   try {
-    const rawIn = req.body || {};
+    const seasonRaw = req.body.season || "Kharif";
+    const season = SEASONS.has(seasonRaw) ? seasonRaw : "Kharif";
 
-    // Normalize & create an input object with lots of possible params
     const input = {
-      nitrogen: toNumberOrNull(rawIn.nitrogen),
-      phosphorus: toNumberOrNull(rawIn.phosphorus),
-      potassium: toNumberOrNull(rawIn.potassium),
-      ph: toNumberOrNull(rawIn.ph),
-      moisture: toNumberOrNull(rawIn.moisture),
-      temperature: toNumberOrNull(rawIn.temperature),
-      rainfall: toNumberOrNull(rawIn.rainfall),
-      season: rawIn.season || "Kharif",
-      texture: rawIn.texture || null,
-      organic_matter: rawIn.organic_matter || null,
-      cec: rawIn.cec || null,
-      salinity: rawIn.salinity || null,
-      elevation: rawIn.elevation || null,
-      latitude: rawIn.latitude || null,
-      longitude: rawIn.longitude || null,
-      irrigation_type: rawIn.irrigation_type || null,
-      previous_crop: rawIn.previous_crop || null,
-      sowing_date: rawIn.sowing_date || null,
-      expected_market_price: rawIn.expected_market_price || null
+      nitrogen: num(req.body.nitrogen),
+      phosphorus: num(req.body.phosphorus),
+      potassium: num(req.body.potassium),
+      ph: num(req.body.ph),
+      moisture: num(req.body.moisture),
+      temperature: num(req.body.temperature),
+      rainfall: num(req.body.rainfall),
+      season,
     };
 
-    console.log("KEY LOADED:", process.env.OPENROUTER_API_KEY ? true : false);
+    const scoredList = shortlistCrops(input);
+    const prompt = buildPrompt(input, scoredList);
 
-    const prompt = buildPrompt(input);
+    let llmResult = null;
+    let rawLlmText = null;
 
-    const apiReq = {
-      model: "openai/gpt-oss-20b:free",
-      messages: [
-        { role: "system", content: "Return responses ONLY in valid JSON format." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.0,
-      top_p: 1,
-      // adjust other params as desired
-    };
-
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      apiReq,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost"
-,
-          "X-Title": "AgriSense Crop Prediction"
-        },
-        timeout: 60000
-      }
-    );
-
-    const text = response.data.choices?.[0]?.message?.content;
-    console.log("RAW MODEL OUTPUT:", text?.slice?.(0, 200) ?? text);
-
-    // Try strict JSON parse first
-    let parsed;
+    /* ---- LLM CALL ---- */
     try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      // Fallback: try to extract JSON substring
-      const jsonMatch = text && text.match(/(\[.*\])/s);
-      if (jsonMatch) {
-        try {
-          parsed = JSON.parse(jsonMatch[1]);
-        } catch (e2) {
-          console.log("Fallback JSON parse failed", e2);
+      const { data } = await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model: "mistralai/mistral-7b-instruct",
+
+          temperature: 0,
+           max_tokens: 800,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a JSON API. Return ONLY valid JSON. No explanations.",
+            },
+            { role: "user", content: prompt },
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:5000",
+            "X-Title": "AgriSense Crop Advisor",
+          },
+          timeout: 60000,
         }
-      }
+      );
+
+      rawLlmText = data?.choices?.[0]?.message?.content;
+      llmResult = safeParseArray(rawLlmText);
+    } catch (err) {
+      console.error("LLM request failed:", err.message);
     }
 
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      console.log("Model returned invalid JSON. Returning error with raw text.");
-      return res.status(500).json({ error: "Model returned invalid JSON", raw: text });
+    console.log("RAW LLM TEXT:", rawLlmText);
+    console.log("PARSED LLM JSON:", llmResult);
+
+    /* ---- FALLBACK ---- */
+    if (!Array.isArray(llmResult) || llmResult.length === 0) {
+      llmResult = scoredList.slice(0, 3).map((c, idx) => ({
+        name: c.name,
+        reason: "Selected based on agronomic suitability scoring.",
+        pros: "Suitable soil-climate match; Stable performance",
+        cons: "Requires proper management",
+        growth: { summary: "Follow standard agronomic practices." },
+        rank: idx + 1,
+        algorithm_score: c.score,
+        is_algorithm_top_choice: idx === 0,
+        confidence: "medium",
+      }));
     }
 
-    // Add programmatic yield estimate as a sanity-check (if model omitted it)
-    const enhanced = parsed.map((cropObj) => {
-      const name = cropObj.name ?? "Unknown";
-      const modelYield = toNumberOrNull(cropObj.yield_estimate_t_per_ha) ? Number(cropObj.yield_estimate_t_per_ha) : null;
-      const autoYield = estimateYield(name, input);
-      // prefer model provided yield (if numeric), else auto estimate
-      const yieldEstimate = modelYield ?? autoYield;
+    /* ---- FINAL ENRICHMENT ---- */
+    const final = llmResult.map((c, idx) => {
+      const fallbackThresholds = getCropThresholds(c.name);
+
       return {
-        ...cropObj,
-        yield_estimate_t_per_ha: yieldEstimate,
-        _yield_source: modelYield ? "model" : "auto_estimate",
-        _input_used: input
+        ...c,
+
+        reason:
+          typeof c.reason === "string" && c.reason.trim().length > 0
+            ? c.reason
+            : "This crop is suitable for the given soil and climate conditions.",
+
+        pros:
+          typeof c.pros === "string" && c.pros.trim().length > 0
+            ? c.pros
+            : "Good agro-climatic compatibility; Stable performance",
+
+        cons:
+          typeof c.cons === "string" && c.cons.trim().length > 0
+            ? c.cons
+            : "Requires proper crop management",
+
+        growth: {
+          summary:
+            c.growth?.summary ||
+            "Follow recommended agronomic practices for optimal yield.",
+
+          thresholds: {
+            temperature:
+              c.growth?.thresholds?.temperature?.min > 0
+                ? c.growth.thresholds.temperature
+                : fallbackThresholds?.temperature,
+
+            ph:
+              c.growth?.thresholds?.ph?.min > 0
+                ? c.growth.thresholds.ph
+                : fallbackThresholds?.ph,
+
+            moisture:
+              c.growth?.thresholds?.moisture?.min > 0
+                ? c.growth.thresholds.moisture
+                : fallbackThresholds?.moisture,
+          },
+        },
+
+        rank: idx + 1,
+        yield_estimate_t_per_ha: estimateYield(c.name, input),
       };
     });
 
-    return res.json({ crops: enhanced });
-
+    return res.json({
+      algorithm_selection: scoredList,
+      llm_recommendations: final,
+    });
   } catch (err) {
-    console.error("Crop Prediction Error:", err?.response?.data || err.message || err);
-    return res.status(500).json({ error: "Prediction failed", detail: err?.response?.data || err?.message });
+    console.error("predictCrop error:", err.message);
+    return res.status(500).json({ error: "Prediction failed" });
   }
 };
