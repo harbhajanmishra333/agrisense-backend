@@ -4,6 +4,9 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
+import hybridRoutes from "./routes/hybridRoutes.js";
+
+
 
 import authRoutes from "./routes/authRoutes.js";
 import cropRoutes from "./routes/cropRoutes.js";
@@ -31,7 +34,7 @@ app.use("/api/crop", cropRoutes);
 app.use("/api/irrigation", irrigationRoutes);
 app.use("/api/soil", soilRoutes);          // ✔ Clean & correct
 app.use("/api/market", marketRoutes);      // ✔ Market AI routes
-
+app.use("/api/hybrid", hybridRoutes);
 
 app.use("/api/market/demand", marketDemandRoutes);
 app.get("/health", (req, res) => {
