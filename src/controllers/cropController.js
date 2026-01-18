@@ -1,7 +1,7 @@
 import axios from "axios";
 import { CROPS, BASE_YIELD } from "../data/crop.js";
 
-/* ===================== UTILS ===================== */
+/* ===================== UTILS (Keep same) ===================== */
 const num = (v) => {
   if (typeof v === 'string') v = v.replace(/[^0-9.]/g, '');
   const n = parseFloat(v);
@@ -10,18 +10,16 @@ const num = (v) => {
 
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
-/* ===================== OPTIMUM SCORING ===================== */
+/* ===================== SCORING LOGIC (Keep same) ===================== */
 const scoreByOptimum = (value, range) => {
   if (value == null || !range) return 0;
   const { min, opt, max } = range;
   if (value < min || value > max) return -5;
-
   const halfRange = (max - min) / 2 || 1;
   const dist = Math.abs(value - opt);
   return +clamp(5 * (1 - dist / halfRange), 0, 5).toFixed(2);
 };
 
-/* ===================== YIELD MODEL ===================== */
 const estimateYield = (cropName, i) => {
   const base = BASE_YIELD[cropName] ?? 2;
   const n = (num(i.nitrogen) ?? 40) / 100;
@@ -31,15 +29,12 @@ const estimateYield = (cropName, i) => {
   const npkAvg = (n + p + k) / 3;
   const npkFactor = clamp(npkAvg, 0.6, 1.6);
   const moisture = clamp((num(i.moisture) ?? 50) / 100, 0.4, 1);
-
   const t = num(i.temperature) ?? 25;
-  // Gaussian bell curve for temp: Peak at 25°C
   const tempFactor = Math.exp(-Math.pow((t - 25) / 12, 2));
 
   return +(base * npkFactor * moisture * tempFactor).toFixed(2);
 };
 
-/* ===================== DECISION ENGINE ===================== */
 const SEASONS = new Set(["Kharif", "Rabi", "Summer", "Annual", "Perennial"]);
 
 const scoreCrop = (crop, i) => {
@@ -75,9 +70,9 @@ const getCropThresholds = (cropName) => {
   };
 };
 
-/* ===================== PROMPT BUILDER ===================== */
+/* ===================== PROMPT UPDATED FOR HINDI CONTENT ===================== */
 const buildPrompt = (input, scoredList) => `
-You are a senior Indian agronomy expert.
+You are a senior Indian agronomy expert fluent in Hindi (Devanagari).
 Analyze these 3 specific crops: ${scoredList.slice(0, 3).map(c => c.name).join(", ")}.
 
 INPUT DATA:
@@ -85,17 +80,20 @@ INPUT DATA:
 - Climate: Temp ${input.temperature}°C, Season ${input.season}, Rainfall ${input.rainfall}mm
 
 TASK:
-Return a JSON array of 3 objects. Use ONLY these names: ${scoredList.slice(0, 3).map(c => c.name).join(", ")}.
+Return a JSON array of 3 objects.
+RULES:
+1. "name" must be the EXACT English name from the list.
+2. "reason" must be in HINDI. Explain why the crop fits the soil/climate.
+3. "growth_summary" must be in HINDI.
+4. "confidence" must be in HINDI (e.g., उच्च, मध्यम).
 
 REQUIRED JSON SCHEMA:
 [
  {
-  "name": "string",
-  "reason": "Technical sentence on climate-soil fit",
-  "pros": "5 pros separated by '; '",
-  "cons": "5 cons separated by '; '",
-  "growth_summary": "Summary of germination to harvest",
-  "confidence": "low|medium|high"
+  "name": "Exact English Name",
+  "reason": "Technical reason in Hindi (Devanagari)",
+  "growth_summary": "Growth cycle summary in Hindi (Devanagari)",
+  "confidence": "Hindi Word"
  }
 ]
 `;
@@ -135,10 +133,10 @@ export const predictCrop = async (req, res) => {
         "https://openrouter.ai/api/v1/chat/completions",
         {
           model: "mistralai/mistral-7b-instruct",
-          temperature: 0.1,
-          max_tokens: 1000,
+          temperature: 0.2, // Low temp prevents hallucinating names
+          max_tokens: 1500,
           messages: [
-            { role: "system", content: "You are a specialized Agronomy API. Output JSON only." },
+            { role: "system", content: "You are an Agronomy API. Output JSON only." },
             { role: "user", content: prompt },
           ],
         },
@@ -149,29 +147,39 @@ export const predictCrop = async (req, res) => {
       );
       llmResult = safeParseArray(data?.choices?.[0]?.message?.content) || [];
     } catch (err) {
-      console.error("LLM Error, falling back to local data.");
+      console.error("LLM Error, falling back to local data.", err.message);
     }
 
-    // ENRICHMENT: Merge LLM descriptions with Local Hard Data
-    const finalRecommendations = (llmResult.length > 0 ? llmResult : scoredList.slice(0, 3)).map((item, idx) => {
-      const cropName = item.name;
-      const localData = scoredList.find(s => s.name === cropName) || scoredList[idx];
-      const thresholds = getCropThresholds(localData.name);
+    // ================= MERGING LOGIC =================
+    // We iterate over our LOCALLY SCORED list (Top 3) to ensure English names are correct.
+    const finalRecommendations = scoredList.slice(0, 3).map((localItem, idx) => {
+      
+      // Try to find the matching AI result by English name
+      const aiItem = llmResult.find(
+        (ai) => ai.name && ai.name.toLowerCase() === localItem.name.toLowerCase()
+      ) || llmResult[idx] || {}; // Fallback to index if name match fails
+
+      const thresholds = getCropThresholds(localItem.name);
 
       return {
-        name: localData.name,
+        // 1. NAME: Always use Local English Name (Safe)
+        name: localItem.name,
+        
+        // 2. STATS: Calculated locally (Accurate)
         rank: idx + 1,
-        algorithm_score: localData.score,
-        is_algorithm_top_choice: localData.name === scoredList[0].name,
-        reason: item.reason || "High suitability based on soil parameters.",
-        pros: item.pros || "Reliable yield; Adaptive to local climate",
-        cons: item.cons || "Requires monitoring for pests",
+        algorithm_score: localItem.score,
+        is_algorithm_top_choice: idx === 0,
+        yield_estimate_t_per_ha: estimateYield(localItem.name, input),
         growth: {
-          summary: item.growth_summary || "Standard growth cycle for " + input.season,
-          thresholds: thresholds
+           thresholds: thresholds,
+           // 3. SUMMARY: Use AI Hindi or Fallback Hindi
+           summary: aiItem.growth_summary || "विकास चक्र और मिट्टी की अनुकूलता का विश्लेषण किया जा रहा है।",
         },
-        yield_estimate_t_per_ha: estimateYield(localData.name, input),
-        confidence: item.confidence || "medium"
+
+        // 4. REASON: Use AI Hindi or Fallback Hindi
+        reason: aiItem.reason || "मिट्टी और जलवायु की स्थिति इस फसल के लिए उपयुक्त है।",
+        
+        confidence: aiItem.confidence || "मध्यम"
       };
     });
 
