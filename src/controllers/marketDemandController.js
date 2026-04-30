@@ -143,30 +143,45 @@ export const marketDemand = async (req, res) => {
 
   // 2. Try LLM Fetch
   try {
-    const response = await axios.post(
+    // API Request
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.error("[ERROR] OPENROUTER_API_KEY is not set in environment variables.");
+    }
+
+    const { data } = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "mistralai/mistral-7b-instruct", // More reliable JSON follower than gpt-oss-20b
+        // Using a model highly optimized for strict JSON output
+        model: "openai/gpt-oss-120b:free",
+        temperature: 0.2,
+        max_tokens: 1500,
         messages: [
-          { role: "system", content: "You are a JSON-only API. Output raw JSON." },
-          { role: "user", content: buildPrompt(input) }
+          {
+            role: "system",
+            content:
+              "You are an Agronomy API. Output valid JSON only. No markdown, no explanation, no extra text.",
+          },
+          { role: "user", content: buildPrompt(input) },
         ],
-        temperature: 0.1,
-        max_tokens: 1500 // Increased for longer forecasts
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+          "X-Title": "Market Demand Advisor",
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://agrisense.app",
-          "X-Title": "AgriSense Demand"
         },
-        timeout: 25000 // 25s timeout limit
+        timeout: 45000,
       }
     );
 
-    const rawText = response.data.choices?.[0]?.message?.content;
-    const json = safeJSONParse(rawText);
+    const rawContent = data?.choices?.[0]?.message?.content;
+    
+    console.log("\n=== RAW LLM RESPONSE ===");
+    console.log(rawContent);
+    console.log("========================\n");
+
+    const json = safeJSONParse(rawContent);
 
     if (!json) {
       throw new Error("JSON Parsing failed from AI response");

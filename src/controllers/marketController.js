@@ -191,29 +191,44 @@ export const marketIntelligence = async (req, res) => {
 
   // 2. Try LLM Fetch
   try {
-    const response = await axios.post(
+    // API Request
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.error("[ERROR] OPENROUTER_API_KEY is not set in environment variables.");
+    }
+
+    const { data } = await axios.post(
       "https://openrouter.ai/api/v1/chat/completions",
       {
-        model: "mistralai/mistral-7b-instruct", // More reliable for JSON than generic free models
+        // Using a model highly optimized for strict JSON output
+        model: "openai/gpt-oss-120b:free",
+        temperature: 0.2,
+        max_tokens: 1500,
         messages: [
-          { role: "system", content: "You are a JSON API. Output JSON only." },
-          { role: "user", content: buildPrompt(inputs) }
+          {
+            role: "system",
+            content:
+              "You are an Agronomy API. Output valid JSON only. No markdown, no explanation, no extra text.",
+          },
+          { role: "user", content: buildPrompt(inputs) },
         ],
-        temperature: 0.1, // Low temp for consistency
-        max_tokens: 1500
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+          "X-Title": "Market Intelligence Advisor",
           "Content-Type": "application/json",
-          "HTTP-Referer": "https://agrisense.app",
-          "X-Title": "AgriSense"
         },
-        timeout: 20000 // 20s timeout
+        timeout: 45000,
       }
     );
 
-    const rawContent = response.data.choices?.[0]?.message?.content;
+    const rawContent = data?.choices?.[0]?.message?.content;
+    
+    console.log("\n=== RAW LLM RESPONSE ===");
+    console.log(rawContent);
+    console.log("========================\n");
+
     aiData = extractJSON(rawContent);
 
   } catch (err) {

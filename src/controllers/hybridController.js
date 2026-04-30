@@ -77,32 +77,45 @@ export const hybridRecommend = async (req, res) => {
   if (!crop) return res.status(400).json({ error: "Crop name is required" });
 
   try {
-    const response = await axios.post(
+    // API Request
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.error("[ERROR] OPENROUTER_API_KEY is not set in environment variables.");
+    }
+
+    const { data } = await axios.post(
       OPENROUTER_URL,
       {
-        model: "mistralai/mistral-7b-instruct",
+        // Using a model highly optimized for strict JSON output
+        model: "openai/gpt-oss-120b:free",
+        temperature: 0.2,
+        max_tokens: 1500,
         messages: [
-          { 
-            role: "system", 
-            content: "You are a JSON-only API for Indian Agronomy. You never use markdown code blocks or text outside the JSON object." 
+          {
+            role: "system",
+            content:
+              "You are an Agronomy API. Output valid JSON only. No markdown, no explanation, no extra text.",
           },
           { role: "user", content: buildPrompt({ crop, growth_stage, soil }) },
         ],
-        temperature: 0.1, // Lower temperature = more consistent JSON
-        max_tokens: 500,
       },
       {
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "HTTP-Referer": process.env.APP_URL || "http://localhost:3000",
+          "X-Title": "Hybrid Crop Advisor",
           "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost:5000",
-          "X-Title": "AgriSense Advisor",
         },
-        timeout: 25000,
+        timeout: 45000,
       }
     );
 
-    const aiResult = extractJSON(response.data.choices[0].message.content);
+    const rawContent = data?.choices?.[0]?.message?.content;
+    
+    console.log("\n=== RAW LLM RESPONSE ===");
+    console.log(rawContent);
+    console.log("========================\n");
+
+    const aiResult = extractJSON(rawContent);
 
     return res.json({
       meta: { crop, growth_stage, status: "success" },
